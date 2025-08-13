@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import json
 from pathlib import Path
 import warnings
 from telegram import (
@@ -81,7 +82,6 @@ def setup_logging():
 GENDER, COUNTRY, AGE = range(3)
 
 # Глобальные переменные для хранения данных
-users = {}
 active_searches = {}
 active_chats = {}
 
@@ -103,8 +103,34 @@ AGE_GROUPS = [
     "от 22 до 25 лет", "от 26 до 35", "от 36 лет"
 ]
 
+# Функции для работы с данными пользователей
+def load_users():
+    try:
+        if os.path.exists('users.json'):
+            with open('users.json', 'r', encoding='utf-8') as f:
+                users_data = json.load(f)
+                logging.info(f"Загружено {len(users_data)} пользователей")
+                return users_data
+        return {}
+    except Exception as e:
+        logging.error(f"Ошибка загрузки users.json: {e}")
+        return {}
+
+def save_users(users_data):
+    try:
+        with open('users.json', 'w', encoding='utf-8') as f:
+            json.dump(users_data, f, indent=4, ensure_ascii=False)
+        logging.info(f"Сохранено {len(users_data)} пользователей")
+    except Exception as e:
+        logging.error(f"Критическая ошибка сохранения: {e}")
+
+
+# Загружаем пользователей при старте
+users = load_users()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)  # Всегда работаем со строковым ID
+    
     if user_id in users:
         if user_id in active_chats:
             await update.message.reply_text(
@@ -117,7 +143,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 reply_markup=main_keyboard
             )
         else:
-            await start_search(update, context)
+            await update.message.reply_text(
+                "Главное меню:",
+                reply_markup=main_keyboard
+            )
     else:
         # Начало процесса регистрации
         keyboard = [
@@ -136,8 +165,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def registration_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
+    
+    # Сохраняем пол пользователя
     users[user_id] = {'gender': query.data}
+    save_users(users)
     
     # Клавиатура для выбора страны
     country_buttons = [InlineKeyboardButton(c, callback_data=c) for c in COUNTRIES]
@@ -152,8 +184,11 @@ async def registration_gender(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def registration_country(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
+    
+    # Сохраняем страну пользователя
     users[user_id]['country'] = query.data
+    save_users(users)
     
     # Клавиатура для выбора возраста
     keyboard = [[InlineKeyboardButton(age, callback_data=age)] for age in AGE_GROUPS]
@@ -167,8 +202,11 @@ async def registration_country(update: Update, context: ContextTypes.DEFAULT_TYP
 async def registration_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
+    
+    # Сохраняем возраст пользователя
     users[user_id]['age'] = query.data
+    save_users(users)
     
     await query.edit_message_text("✅ Регистрация завершена!")
     await query.message.reply_text(
@@ -177,7 +215,8 @@ async def registration_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)
+    
     if user_id not in users:
         await update.message.reply_text("❌ Вы не зарегистрированы! Введите /start")
         return
@@ -188,6 +227,8 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         search_gender = 'female'
     elif update.message.text == 'Найти парня':
         search_gender = 'male'
+    elif update.message.text == 'Рандом':
+        search_gender = None
     
     # Добавление в активный поиск
     active_searches[user_id] = {
@@ -203,7 +244,7 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Поиск партнера
     await find_partner(user_id, search_gender, context)
 
-async def find_partner(user_id: int, search_gender: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def find_partner(user_id: str, search_gender: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Поиск подходящего партнера
     partner_id = None
     for uid, data in active_searches.items():
@@ -237,7 +278,7 @@ async def find_partner(user_id: int, search_gender: str, context: ContextTypes.D
             reply_markup=ReplyKeyboardRemove())
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)
     
     if user_id in active_searches:
         # Остановка поиска
@@ -273,7 +314,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=main_keyboard)
 
 async def next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)
     
     if user_id in active_chats:
         # Завершение текущего диалога
@@ -303,7 +344,7 @@ async def next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=main_keyboard)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = str(update.message.from_user.id)
     if user_id in active_chats:
         partner_id = active_chats[user_id]
         # Прямая пересылка сообщения
@@ -325,6 +366,10 @@ def main() -> None:
     # Настройка логирования
     logger = setup_logging()
     logger.info("Бот запущен")
+    
+    # Загружаем данные пользователей
+    global users
+    users = load_users()
     
     # Создаем Application
     application = Application.builder().token(TOKEN).build()

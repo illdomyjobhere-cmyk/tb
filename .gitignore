@@ -1,1 +1,6 @@
-1.py
+# .gitignore
+config.py
+__pycache__/
+logs/
+.env
+*.log

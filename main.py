@@ -1,7 +1,6 @@
 import logging
 import os
 import time
-import json
 from pathlib import Path
 import warnings
 from telegram import (
@@ -28,21 +27,152 @@ from config import TOKEN
 # Подавляем специфические предупреждения PTB
 warnings.filterwarnings("ignore", category=PTBUserWarning)
 
+# Создаем фильтр для разделения логов
+class ConsoleFilter(logging.Filter):
+    def filter(self, record):
+        # Разрешаем только сообщения от корневого логгера (наши сообщения)
+        return record.name == "root"
+
+# Настройка логгирования
+def setup_logging():
+    # Создаем папку для логов
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Создаем уникальное имя файла
+    log_file = log_dir / f"bot_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    
+    # Настройка основного логгера
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    
+    # Форматтер для логов (подробный)
+    detailed_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Форматтер для консоли (простой)
+    simple_formatter = logging.Formatter('%(message)s')
+    
+    # Обработчик для файла (все сообщения)
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(detailed_formatter)
+    
+    # Обработчик для консоли (только наши сообщения)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(simple_formatter)
+    
+    # Добавляем фильтр, который пропускает только сообщения от корневого логгера
+    console_handler.addFilter(ConsoleFilter())
+    
+    # Добавляем обработчики
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    # Устанавливаем уровень логирования для библиотек
+    logging.getLogger("httpx").setLevel(logging.DEBUG)
+    logging.getLogger("httpcore").setLevel(logging.DEBUG)
+    logging.getLogger("telegram").setLevel(logging.DEBUG)
+    logging.getLogger("asyncio").setLevel(logging.DEBUG)
+    
+    return logger
+
+async def send_any_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message: Update.message, debug_prefix: str = None) -> None:
+    """
+    Универсальная функция для отправки любого типа сообщения
+    :param context: контекст бота
+    :param chat_id: ID чата для отправки
+    :param message: объект сообщения из Update
+    :param debug_prefix: префикс для режима отладки (если None - обычная пересылка)
+    """
+    try:
+        if message.text:
+            # Текстовое сообщение
+            text = f"{debug_prefix}: {message.text}" if debug_prefix else message.text
+            await context.bot.send_message(chat_id=chat_id, text=text)
+        
+        elif message.photo:
+            # Фото
+            caption = f"{debug_prefix}: {message.caption}" if debug_prefix and message.caption else message.caption
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=message.photo[-1].file_id,
+                caption=caption
+            )
+        
+        elif message.video:
+            # Видео
+            caption = f"{debug_prefix}: {message.caption}" if debug_prefix and message.caption else message.caption
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=message.video.file_id,
+                caption=caption
+            )
+        
+        elif message.document:
+            # Документ
+            caption = f"{debug_prefix}: {message.caption}" if debug_prefix and message.caption else message.caption
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=message.document.file_id,
+                caption=caption
+            )
+        
+        elif message.audio:
+            # Аудио
+            caption = f"{debug_prefix}: {message.caption}" if debug_prefix and message.caption else message.caption
+            await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=message.audio.file_id,
+                caption=caption
+            )
+        
+        elif message.voice:
+            # Голосовое сообщение
+            if debug_prefix:
+                # В режиме отладки отправляем текст + голосовое
+                await context.bot.send_message(chat_id=chat_id, text=f"{debug_prefix}: Голосовое сообщение")
+                await context.bot.send_voice(chat_id=chat_id, voice=message.voice.file_id)
+            else:
+                await context.bot.send_voice(chat_id=chat_id, voice=message.voice.file_id)
+        
+        elif message.sticker:
+            # Стикер
+            if debug_prefix:
+                # В режиме отладки отправляем текст + стикер
+                await context.bot.send_message(chat_id=chat_id, text=f"{debug_prefix}: Стикер")
+                await context.bot.send_sticker(chat_id=chat_id, sticker=message.sticker.file_id)
+            else:
+                await context.bot.send_sticker(chat_id=chat_id, sticker=message.sticker.file_id)
+        
+        elif message.video_note:
+            # Кружочек (video note)
+            if debug_prefix:
+                await context.bot.send_message(chat_id=chat_id, text=f"{debug_prefix}: Видеосообщение")
+                await context.bot.send_video_note(chat_id=chat_id, video_note=message.video_note.file_id)
+            else:
+                await context.bot.send_video_note(chat_id=chat_id, video_note=message.video_note.file_id)
+    
+    except Exception as e:
+        logging.error(f"Ошибка при отправке сообщения: {e}")
+
 # Состояния регистрации
 GENDER, COUNTRY, AGE = range(3)
 
-# Глобальные переменные
+# Глобальные переменные для хранения данных
+users = {}
 active_searches = {}
 active_chats = {}
-users = {}
+debug_mode = {}  # Словарь для хранения режима отладки по пользователям
 
-# Клавиатуры
+# Настройки клавиатур
 main_keyboard = ReplyKeyboardMarkup(
     [['Найти девушку', 'Рандом', 'Найти парня'],
      ['VIP статус', 'Комнаты', 'Профиль']],
     resize_keyboard=True
 )
 
+# Списки для регистрации
 COUNTRIES = [
     "Россия", "Украина", "Беларусь", "Казахстан",
     "Узбекистан", "Страны ЕС", "США", "Другая"
@@ -53,108 +183,85 @@ AGE_GROUPS = [
     "от 22 до 25 лет", "от 26 до 35", "от 36 лет"
 ]
 
-def setup_logging():
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"bot_{time.strftime('%Y%m%d_%H%M%S')}.log"
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включение/выключение режима отладки"""
+    user_id = update.message.from_user.id
     
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    
-    # Форматтер для файла
-    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    
-    # Форматтер для консоли (без INFO:root)
-    console_formatter = logging.Formatter('%(message)s')
-    
-    # Файловый обработчик
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(file_formatter)
-    
-    # Консольный обработчик
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(console_formatter)
-    
-    # Добавляем только наши сообщения в консоль
-    class ConsoleFilter(logging.Filter):
-        def filter(self, record):
-            return record.name == "root"
-    
-    console_handler.addFilter(ConsoleFilter())
-    
-    # Убираем лишние логи библиотек
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("telegram").setLevel(logging.WARNING)
-    logging.getLogger("asyncio").setLevel(logging.WARNING)
-    
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-    
-    return logger
-
-def load_users():
-    try:
-        if os.path.exists('users.json'):
-            with open('users.json', 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        logging.error(f"Ошибка загрузки users.json: {e}")
-        return {}
-
-def save_users(users_data):
-    try:
-        with open('users.json', 'w', encoding='utf-8') as f:
-            json.dump(users_data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        logging.error(f"Ошибка сохранения users.json: {e}")
+    if user_id in debug_mode and debug_mode[user_id]:
+        debug_mode[user_id] = False
+        await update.message.reply_text(
+            "🔧 Режим отладки выключен\n"
+            "Теперь бот работает в обычном режиме",
+            reply_markup=main_keyboard
+        )
+    else:
+        # Выходим из всех активных состояний
+        if user_id in active_searches:
+            del active_searches[user_id]
+        if user_id in active_chats:
+            partner_id = active_chats[user_id]
+            if partner_id in active_chats:
+                del active_chats[partner_id]
+            del active_chats[user_id]
+        
+        debug_mode[user_id] = True
+        await update.message.reply_text(
+            "🔧 Режим отладки включен\n\n"
+            "Все сообщения будут отправляться обратно вам.\n"
+            "Для выхода из режима отладки используйте /debug",
+            reply_markup=ReplyKeyboardRemove()
+        )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.message.from_user.id)
-    context.user_data.pop('in_registration', None)
+    user_id = update.message.from_user.id
     
-    if user_id not in users:
-        context.user_data['in_registration'] = True
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
+        await update.message.reply_text(
+            "🔧 Вы в режиме отладки. Используйте /debug для выхода.\n"
+            "Все сообщения будут отправляться обратно вам."
+        )
+        return ConversationHandler.END
+    
+    if user_id in users:
+        if user_id in active_chats:
+            await update.message.reply_text(
+                "❌ Вы уже в диалоге! Завершите текущий диалог командой /stop",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        elif user_id in active_searches:
+            await update.message.reply_text(
+                "🔍 Вы уже в поиске! Остановите поиск командой /stop",
+                reply_markup=main_keyboard
+            )
+        else:
+            await start_search(update, context)
+    else:
+        # Начало процесса регистрации
         keyboard = [
             [InlineKeyboardButton("Я - парень", callback_data='male'),
              InlineKeyboardButton("Я - девушка", callback_data='female')]
         ]
         await update.message.reply_text(
-            "👋 Добро пожаловать! Давайте зарегистрируемся.\nШаг 1: Ваш пол",
+            "👋 Добро пожаловать в анонимный чат!\n\n"
+            "🛠️ Для использования бота требуется регистрация\n\n"
+            "Шаг 1: Ваш пол",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return GENDER
-    
-    if user_id in active_chats:
-        await update.message.reply_text(
-            "❌ Вы уже в диалоге! Завершите текущий диалог командой /stop",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    elif user_id in active_searches:
-        await update.message.reply_text(
-            "🔍 Вы уже в поиске! Остановите поиск командой /stop",
-            reply_markup=main_keyboard
-        )
-    else:
-        await update.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_keyboard
-        )
     return ConversationHandler.END
 
 async def registration_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
-    
+    user_id = query.from_user.id
     users[user_id] = {'gender': query.data}
-    save_users(users)
     
+    # Клавиатура для выбора страны
     country_buttons = [InlineKeyboardButton(c, callback_data=c) for c in COUNTRIES]
     keyboard = [country_buttons[i:i+2] for i in range(0, len(country_buttons), 2)]
     
-    await query.edit_message_text("Вы выбрали пол. Шаг 2: Ваша страна")
+    await query.edit_message_text("Шаг 2: Ваша страна")
     await query.message.reply_text(
         "Выберите страну:",
         reply_markup=InlineKeyboardMarkup(keyboard))
@@ -163,14 +270,13 @@ async def registration_gender(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def registration_country(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
-    
+    user_id = query.from_user.id
     users[user_id]['country'] = query.data
-    save_users(users)
     
+    # Клавиатура для выбора возраста
     keyboard = [[InlineKeyboardButton(age, callback_data=age)] for age in AGE_GROUPS]
     
-    await query.edit_message_text("Вы выбрали страну. Шаг 3: Ваш возраст")
+    await query.edit_message_text("Шаг 3: Ваш возраст")
     await query.message.reply_text(
         "Выберите возрастную категорию:",
         reply_markup=InlineKeyboardMarkup(keyboard))
@@ -179,102 +285,143 @@ async def registration_country(update: Update, context: ContextTypes.DEFAULT_TYP
 async def registration_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
-    
+    user_id = query.from_user.id
     users[user_id]['age'] = query.data
-    save_users(users)
-    context.user_data.pop('in_registration', None)
     
     await query.edit_message_text("✅ Регистрация завершена!")
     await query.message.reply_text(
-        "Теперь вы можете начать поиск собеседника:",
+        "Теперь вы можете начать поиск собеседника с помощью /start",
         reply_markup=main_keyboard)
     return ConversationHandler.END
 
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
+    user_id = update.message.from_user.id
     
-    if user_id not in users:
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
         await update.message.reply_text(
-            "❌ Вы не зарегистрированы! Введите /start",
-            reply_markup=main_keyboard
+            "🔧 Вы в режиме отладки. Используйте /debug для выхода.\n"
+            "Все сообщения будут отправляться обратно вам."
         )
         return
     
-    context.user_data.pop('in_registration', None)
+    if user_id not in users:
+        await update.message.reply_text("❌ Вы не зарегистрированы! Введите /start")
+        return
     
+    # Определение пола для поиска
     search_gender = None
     if update.message.text == 'Найти девушку':
         search_gender = 'female'
     elif update.message.text == 'Найти парня':
         search_gender = 'male'
     
-    active_searches[user_id] = {'gender': search_gender}
+    # Добавление в активный поиск
+    active_searches[user_id] = {
+        'gender': search_gender,
+        'message_id': update.message.message_id
+    }
     
     await update.message.reply_text(
         "🔍 Ищем собеседника...\n"
         "🛑 Чтобы остановить поиск, используйте /stop",
-        reply_markup=ReplyKeyboardRemove()
-    )
+        reply_markup=ReplyKeyboardRemove())
     
+    # Поиск партнера
     await find_partner(user_id, search_gender, context)
 
-async def find_partner(user_id: str, search_gender: str, context: ContextTypes.DEFAULT_TYPE):
-    for partner_id, partner_data in active_searches.items():
-        if partner_id == user_id:
-            continue
-            
-        compatible = True
-        user_data = users[user_id]
-        partner_user_data = users[partner_id]
-        
-        if search_gender and partner_user_data['gender'] != search_gender:
-            compatible = False
-            
-        if partner_data['gender'] and user_data['gender'] != partner_data['gender']:
-            compatible = False
-            
-        if compatible:
-            del active_searches[user_id]
-            del active_searches[partner_id]
-            
-            active_chats[user_id] = partner_id
-            active_chats[partner_id] = user_id
-            
-            await context.bot.send_message(
-                user_id,
-                "💬 Собеседник найден! Начинайте общение\n\n"
-                "🔄 /next - новый собеседник\n"
-                "🛑 /stop - завершить диалог",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            
-            await context.bot.send_message(
-                partner_id,
-                "💬 Собеседник найден! Начинайте общение\n\n"
-                "🔄 /next - новый собеседник\n"
-                "🛑 /stop - завершить диалог",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return
+async def find_partner(user_id: int, search_gender: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
+        return
     
-    if user_id in active_searches:
-        context.job_queue.run_once(
-            lambda ctx: find_partner(user_id, search_gender, ctx[0]),
-            5,
-            context=context
-        )
+    # Поиск подходящего партнера
+    partner_id = None
+    for uid, data in active_searches.items():
+        if uid == user_id:
+            continue
+        if not data['gender'] or data['gender'] == users[user_id]['gender']:
+            partner_id = uid
+            break
+    
+    if partner_id:
+        # Создание чата
+        del active_searches[user_id]
+        del active_searches[partner_id]
+        
+        active_chats[user_id] = partner_id
+        active_chats[partner_id] = user_id
+        
+        # Отправка уведомлений
+        await context.bot.send_message(
+            user_id,
+            "💬 Собеседник найден! Начинайте общение\n\n"
+            "🔄 /next - новый собеседник\n"
+            "🛑 /stop - завершить диалог",
+            reply_markup=ReplyKeyboardRemove())
+        
+        await context.bot.send_message(
+            partner_id,
+            "💬 Собеседник найден! Начинайте общение\n\n"
+            "🔄 /next - новый собеседник\n"
+            "🛑 /stop - завершить диалог",
+            reply_markup=ReplyKeyboardRemove())
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
+    user_id = update.message.from_user.id
+    
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
+        await update.message.reply_text(
+            "🔧 Вы в режиме отладки. Используйте /debug для выхода."
+        )
+        return
     
     if user_id in active_searches:
+        # Остановка поиска
         del active_searches[user_id]
         await update.message.reply_text(
             "🛑 Поиск остановлен",
-            reply_markup=main_keyboard
-        )
+            reply_markup=main_keyboard)
+    
     elif user_id in active_chats:
+        # Завершение диалога
+        partner_id = active_chats[user_id]
+        
+        if partner_id in active_chats:
+            del active_chats[partner_id]
+            await context.bot.send_message(
+                partner_id,
+                "❌ Собеседник завершил диалог\n\n"
+                "🔍 Чтобы начать новый, используйте /start",
+                reply_markup=main_keyboard)
+        
+        if user_id in active_chats:
+            del active_chats[user_id]
+        
+        await update.message.reply_text(
+            "🛑 Диалог завершен\n\n"
+            "🔍 Чтобы начать новый, используйте /start",
+            reply_markup=main_keyboard)
+    
+    else:
+        await update.message.reply_text(
+            "🛑 Диалог остановлен\n\n"
+            "🔍 Отправьте /start, чтобы начать поиск",
+            reply_markup=main_keyboard)
+
+async def next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
+        await update.message.reply_text(
+            "🔧 Вы в режиме отладки. Используйте /debug для выхода."
+        )
+        return
+    
+    if user_id in active_chats:
+        # Завершение текущего диалога
         partner_id = active_chats[user_id]
         del active_chats[user_id]
         
@@ -284,114 +431,57 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 partner_id,
                 "❌ Собеседник завершил диалог\n\n"
                 "🔍 Чтобы начать новый, используйте /start",
-                reply_markup=main_keyboard
-            )
+                reply_markup=main_keyboard)
         
+        # Начало нового поиска
         await update.message.reply_text(
-            "🛑 Диалог завершен\n\n"
-            "🔍 Чтобы начать новый, используйте /start",
-            reply_markup=main_keyboard
-        )
+            "🔄 Ищем нового собеседника...\n"
+            "🛑 Чтобы остановить поиск, используйте /stop",
+            reply_markup=ReplyKeyboardRemove())
+        active_searches[user_id] = {'gender': None}
+        await find_partner(user_id, None, context)
+    
     else:
         await update.message.reply_text(
-            "ℹ️ Вы не в диалоге и не в поиске.\n"
+            "ℹ️ Вы не в диалоге\n"
             "🔍 Чтобы начать поиск, используйте /start",
-            reply_markup=main_keyboard
-        )
+            reply_markup=main_keyboard)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
+    user_id = update.message.from_user.id
+    
+    # Проверяем режим отладки
+    if user_id in debug_mode and debug_mode[user_id]:
+        # В режиме отладки отправляем сообщение обратно пользователю
+        await send_any_message(context, user_id, update.message, "🔧 [DEBUG]")
+        return
+    
     if user_id in active_chats:
         partner_id = active_chats[user_id]
-        await context.bot.send_message(
-            partner_id,
-            update.message.text
-        )
+        # Пересылаем сообщение собеседнику
+        await send_any_message(context, partner_id, update.message)
     else:
         await update.message.reply_text(
             "ℹ️ Вы не в диалоге\n"
             "🔍 Чтобы начать поиск, используйте /start",
-            reply_markup=main_keyboard
-        )
-
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        message = update.message
-        
-        try:
-            if message.photo:
-                await context.bot.send_photo(
-                    chat_id=partner_id,
-                    photo=message.photo[-1].file_id,
-                    caption=message.caption
-                )
-            elif message.video:
-                await context.bot.send_video(
-                    chat_id=partner_id,
-                    video=message.video.file_id,
-                    caption=message.caption
-                )
-            elif message.document:
-                await context.bot.send_document(
-                    chat_id=partner_id,
-                    document=message.document.file_id,
-                    caption=message.caption
-                )
-            elif message.audio:
-                await context.bot.send_audio(
-                    chat_id=partner_id,
-                    audio=message.audio.file_id,
-                    caption=message.caption
-                )
-            elif message.voice:
-                await context.bot.send_voice(
-                    chat_id=partner_id,
-                    voice=message.voice.file_id
-                )
-        except Exception as e:
-            logging.error(f"Ошибка отправки медиа: {e}")
-            await update.message.reply_text("❌ Не удалось отправить медиа")
-    else:
-        await update.message.reply_text(
-            "ℹ️ Вы не в диалоге\n"
-            "🔍 Чтобы начать поиск, используйте /start",
-            reply_markup=main_keyboard
-        )
+            reply_markup=main_keyboard)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.message.from_user.id)
-    context.user_data.pop('in_registration', None)
-    
-    if user_id in users and not all(k in users[user_id] for k in ['gender', 'country', 'age']):
-        del users[user_id]
-        save_users(users)
-    
-    await update.message.reply_text(
-        "❌ Регистрация отменена",
-        reply_markup=main_keyboard
-    )
+    await update.message.reply_text("Регистрация отменена")
     return ConversationHandler.END
 
 async def dummy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("🚧 В разработке", reply_markup=main_keyboard)
+    await update.message.reply_text("🚧 В разработке")
 
 def main() -> None:
+    # Настройка логирования
     logger = setup_logging()
-    logger.info("Бот запускается...")
+    logger.info("Бот запущен")
     
-    if not os.path.exists('users.json'):
-        with open('users.json', 'w') as f:
-            json.dump({}, f)
-        logger.info("Создан новый файл users.json")
-    
-    global users
-    users = load_users()
-    logger.info(f"Загружено {len(users)} пользователей")
-    
+    # Создаем Application
     application = Application.builder().token(TOKEN).build()
 
+    # Обработчик регистрации
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -400,38 +490,37 @@ def main() -> None:
             AGE: [CallbackQueryHandler(registration_age)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=True
+        per_message=True
     )
     application.add_handler(conv_handler)
 
+    # Обработчики команд
+    application.add_handler(CommandHandler("debug", debug))
     application.add_handler(CommandHandler("stop", stop))
+    application.add_handler(CommandHandler("next", next))
+    
+    # Обработчики всех типов сообщений (кроме команд)
     application.add_handler(MessageHandler(
         filters.Regex('^(Найти девушку|Рандом|Найти парня)$'),
         start_search))
     
-    media_filter = (
-        filters.PHOTO | filters.VIDEO | filters.Document.ALL | 
-        filters.AUDIO | filters.VOICE
-    )
+    # Обработчик для всех типов сообщений (текст, фото, видео, документы и т.д.)
     application.add_handler(MessageHandler(
-        media_filter & filters.ChatType.PRIVATE,
-        handle_media
-    ))
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-        handle_message
-    ))
+        ~filters.COMMAND,
+        handle_message))
 
+    # Заглушки для других команд
     commands = ['vip', 'link', 'ref', 'issue', 'search', 'top']
     for cmd in commands:
         application.add_handler(CommandHandler(cmd, dummy_command))
 
+    # Запуск бота
     logger.info("Бот начал работу")
     try:
         application.run_polling()
     except Exception as e:
-        logger.error(f"Ошибка: {str(e)}")
+        logger.error(f"Бот остановлен из-за ошибки: {str(e)}")
+        raise
     finally:
         logger.info("Бот остановлен")
 
